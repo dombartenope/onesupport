@@ -3,9 +3,9 @@ package actions
 import (
 	"bufio"
 	"encoding/csv"
-	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dombartenope/onesupport.git/userinput"
@@ -14,81 +14,121 @@ import (
 func FindSomeStringInFile() {
 	files, err := os.ReadDir("./inputs")
 	if err != nil {
-		log.Fatalf("error: %s", err)
+		log.Fatalf("error reading inputs: %s", err)
+	}
+
+	//What output files do we need?
+	var needCSV, needTXT bool
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		switch ext := strings.ToLower(filepath.Ext(f.Name())); ext {
+		case ".csv":
+			needCSV = true
+		case ".txt", ".log":
+			needTXT = true
+		}
+		// if we already know we need both, break early
+		if needCSV && needTXT {
+			break
+		}
 	}
 
 	searchTerm := userinput.SearchPrompt()
 
-	for _, v := range files {
-		fileName := fmt.Sprintf("inputs/%s", v.Name())
-		file, err := os.Open(fileName)
+	// Prepare output writers based on what we need
+	var (
+		csvWriter *csv.Writer
+		txtWriter *bufio.Writer
+	)
+
+	if needCSV {
+		outCSV, err := os.Create("outputs/out.csv")
 		if err != nil {
-			log.Fatalf("Error for var \"file\": %s", err)
+			log.Fatalf("error creating out.csv: %s", err)
 		}
+		defer outCSV.Close()
+		csvWriter = csv.NewWriter(outCSV)
+		defer csvWriter.Flush()
+	}
 
-		if strings.Contains(file.Name(), ".txt") || strings.Contains(file.Name(), ".log") {
-			//Only create txt output if the file is a .txt or .log
-			outTXT, err := os.Create("outputs/out.txt")
-			if err != nil {
-				log.Fatalf("error creating outTXT: %s", err)
-			}
+	if needTXT {
+		outTXT, err := os.Create("outputs/out.txt")
+		if err != nil {
+			log.Fatalf("error creating out.txt: %s", err)
+		}
+		defer outTXT.Close()
+		txtWriter = bufio.NewWriter(outTXT)
+		defer txtWriter.Flush()
+	}
 
-			//bufio for txt reading
-			writer := bufio.NewWriter(outTXT)
-			defer writer.Flush()
-			//READ FILE
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				//CHECK FOR SEARCH TERM
-				if strings.Contains(scanner.Text(), searchTerm) {
-					//WRITE TO OUTPUT FILE
-					_, err := writer.WriteString(fmt.Sprintf("%s\n", scanner.Text()))
-					if err != nil {
-						log.Fatalf("Error for var \"txt writer\": %s", err)
-					}
-				}
-			}
-		} else if strings.Contains(file.Name(), ".csv") {
-			//Only create csv output if the file is a .csv
-			outCSV, err := os.Create("outputs/out.csv")
-			if err != nil {
-				log.Fatalf("error creating outCSV: %s", err)
-			}
+	// CSV header guard so we write headers only once
+	headerWritten := false
 
-			//csv reader for individual header and rows
+	// Process each file
+	for _, v := range files {
+		if v.IsDir() {
+			continue
+		}
+		name := v.Name()
+		path := filepath.Join("inputs", name)
+		file, err := os.Open(path)
+		if err != nil {
+			log.Fatalf("error opening %s: %s", path, err)
+		}
+		defer file.Close()
+
+		ext := strings.ToLower(filepath.Ext(name))
+		switch ext {
+		case ".csv":
+			if csvWriter == nil {
+				// we decided we didn't need CSV output
+				continue
+			}
 			reader := csv.NewReader(file)
-			writer := csv.NewWriter(outCSV)
-			defer writer.Flush()
-
-			//READ HEADERS
-			header, err := reader.Read()
-			if err != nil {
-				log.Fatalf("Error for var \"header\": %s", err)
+			if !headerWritten {
+				header, err := reader.Read()
+				if err != nil {
+					log.Fatalf("reading header from %s: %s", name, err)
+				}
+				if err := csvWriter.Write(header); err != nil {
+					log.Fatalf("writing header: %s", err)
+				}
+				headerWritten = true
 			}
-			err = writer.Write(header)
-			if err != nil {
-				log.Fatalf("Error for var \"err\": %s", err)
-			}
-
-			//READ ROWS
 			rows, err := reader.ReadAll()
 			if err != nil {
-				log.Fatalf("Error for var \"rows\": %s", err)
+				log.Fatalf("reading rows from %s: %s", name, err)
 			}
 			for _, row := range rows {
-				for _, r := range row {
-					//CHECK FOR SEARCH TERM
-					if strings.Contains(r, searchTerm) {
-						//WRITE TO OUTPUT FILE
-						err := writer.Write(row)
-						if err != nil {
-							log.Fatalf("Error for var \"csv writer\": %s", err)
+				for _, cell := range row {
+					if strings.Contains(cell, searchTerm) {
+						if err := csvWriter.Write(row); err != nil {
+							log.Fatalf("writing row: %s", err)
 						}
-
+						break
 					}
 				}
 			}
-		}
 
+		case ".txt", ".log":
+			if txtWriter == nil {
+				// we decided we didn't need TXT output
+				continue
+			}
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if strings.Contains(line, searchTerm) {
+					if _, err := txtWriter.WriteString(line + "\n"); err != nil {
+						log.Fatalf("writing text: %s", err)
+					}
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				log.Fatalf("scanning %s: %s", name, err)
+			}
+		}
 	}
 }
